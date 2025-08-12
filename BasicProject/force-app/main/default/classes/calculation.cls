@@ -12,6 +12,7 @@ public with sharing class calculation {
         if (total == null || discountRate < 0 || discountRate > 100) {
             throw new AuraHandledException('Invalid input values');
         }
+        Decimal discount = (total * discountRate) / 100;
+        return total - discount;
     }
-
 }
