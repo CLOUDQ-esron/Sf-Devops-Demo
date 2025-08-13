@@ -1,54 +1,150 @@
-name: Deploy to Salesforce
+# Unique name for this workflow
+name: Validate PR on develop branch
 
+# Definition of when the workflow should run
 on:
-  push:
-    branches:
-      - main
+  pull_request:
+    types: [opened, synchronize]
+    branches: [develop]
+    paths:
+      - 'BasicProject/force-app/**'
 
 jobs:
-  deploy:
+  validate-deployment-on-develop-org:
     runs-on: ubuntu-latest
-
+    if: ${{ github.actor != 'dependabot[bot]' }}
     steps:
-      # 1. Checkout repo
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # 2. Setup Node 20
-      - name: Setup Node.js
+      # Install Node.js 20 FIRST so the CLI & plugins use Node 20 (no engine mismatch)
+      - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '20'
 
-      # 3. Install Salesforce CLI
-      - name: Install Salesforce CLI
+      # Checkout repo with full history for delta comparison
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Read PR Body -> parse tests list -> export APEX_TESTS
+      - name: Read PR Body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          npm install --global sfdx-cli
+          echo "$PR_BODY" > ./pr_body.txt
+          node ./parsePR.js
+          TESTS=$(cat testsToRun.txt || echo "all")
+          echo "APEX_TESTS=$TESTS" >> $GITHUB_ENV
+          echo "Resolved APEX_TESTS=$TESTS"
 
-      # 4. Install sfdx-git-delta plugin (non-interactive)
+      # Install the modern Salesforce CLI ("sf") under Node 20
+      - name: Install Salesforce CLI (sf)
+        run: |
+          npm install -g @salesforce/cli
+          sf --version
+          node -v
+
+      # Install sfdx-git-delta (non-interactive so CI doesn't hang)
       - name: Install sfdx-git-delta
         run: |
-          sfdx plugins:install sfdx-git-delta@latest --non-interactive
+          sf plugins install sfdx-git-delta@latest --non-interactive
+          sf plugins
 
-      # 5. Authenticate using auth URL
-      - name: Authenticate with Salesforce
+      # Java required for scanner
+      - name: Install Java
         run: |
-          echo "${{ secrets.SFDX_AUTH_URL }}" > auth_url.txt
-          sfdx force:auth:sfdxurl:store --sfdxurlfile auth_url.txt --setalias MyOrg --setdefaultusername
+          sudo apt-get update
+          sudo apt-get install -y default-jdk
 
-      # 6. Change to the BasicProject directory (IMPORTANT)
-      - name: Change to BasicProject
-        run: cd BasicProject
+      # Install SFDX Scanner (non-interactive) and verify
+      - name: Install SFDX Scanner
+        run: |
+          sf plugins install @salesforce/sfdx-scanner --non-interactive
+          sf plugins
 
-      # 7. Create delta package
-      - name: Create Delta Package
+      # Authenticate to Integration/Dev org using SFDX auth URL (normal org, not scratch)
+      # We wrap the URL into a tiny JSON file because `sf org login sfdx-url` accepts a JSON with key "sfdxAuthUrl"
+      - name: Authenticate to Integration Org
+        run: |
+          echo '{ "sfdxAuthUrl": "'"${{ secrets.SFDX_DEVELOP_URL }}"'" }' > auth.json
+          sf org login sfdx-url --sfdx-url-file auth.json --alias integration --set-default
+          sf org display --target-org integration
+
+      # === All SFDX/SF project-aware commands must run inside the project folder ===
+      # Create delta (new/modified/deleted) from the last commit and limit to your project source path
+      - name: Create delta packages for new, modified or deleted metadata
         working-directory: BasicProject
         run: |
-          mkdir delta
-          sfdx sgd:source:delta --from HEAD~1 --to HEAD --output delta/ --generate-delta
+          mkdir -p changed-sources
+          sf sgd source delta \
+            --to "HEAD" \
+            --from "HEAD^" \
+            --output changed-sources \
+            --generate-delta \
+            --source force-app/
 
-      # 8. Deploy to Salesforce
-      - name: Deploy to Salesforce
+      # Scan only the changed Apex (if any)
+      - name: Scan code
         working-directory: BasicProject
         run: |
-          sfdx force:source:deploy -p delta/ --testlevel NoTestRun
+          if [ -d "changed-sources" ] && compgen -G "changed-sources/**/*.cls" > /dev/null; then
+            cd changed-sources
+            sf scanner run --format sarif --target './**/*.cls' --category "Design,Best Practices,Performance" --outfile 'apexScanResults.sarif'
+          else
+            echo "No Apex classes found in delta; skipping scan."
+          fi
+
+      # Upload SARIF if it exists
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@v1
+        if: ${{ hashFiles('BasicProject/changed-sources/apexScanResults.sarif') != '' }}
+        with:
+          sarif_file: BasicProject/changed-sources/apexScanResults.sarif
+
+      # Check-only deploy the delta and run specified tests (when APEX_TESTS != 'all')
+      - name: Check-only deploy delta changes - run specified tests
+        if: ${{ env.APEX_TESTS != 'all' }}
+        working-directory: BasicProject
+        run: |
+          if [ -d "changed-sources/force-app" ] && [ "$(ls -A changed-sources/force-app 2>/dev/null)" ]; then
+            echo "Running specified tests: $APEX_TESTS"
+            sf project deploy start \
+              --source-dir "changed-sources/force-app" \
+              --test-level RunSpecifiedTests \
+              --tests "$APEX_TESTS" \
+              --dry-run \
+              --target-org integration \
+              --json
+          else
+            echo "No metadata changes detected to deploy."
+          fi
+
+      # Check-only deploy the delta and run all local tests (when APEX_TESTS == 'all')
+      - name: Check-only deploy delta changes - run all tests
+        if: ${{ env.APEX_TESTS == 'all' }}
+        working-directory: BasicProject
+        run: |
+          if [ -d "changed-sources/force-app" ] && [ "$(ls -A changed-sources/force-app 2>/dev/null)" ]; then
+            sf project deploy start \
+              --source-dir "changed-sources/force-app" \
+              --test-level RunLocalTests \
+              --dry-run \
+              --target-org integration \
+              --json
+          else
+            echo "No metadata changes detected to deploy."
+          fi
+
+      # Deploy destructive changes (if sgd produced them) in check-only mode
+      - name: Deploy destructive changes (if any)
+        working-directory: BasicProject
+        run: |
+          if [ -d "changed-sources/destructiveChanges" ] && [ "$(ls -A changed-sources/destructiveChanges 2>/dev/null)" ]; then
+            sf deploy metadata \
+              --metadata-dir "changed-sources/destructiveChanges" \
+              --ignore-warnings \
+              --dry-run \
+              --target-org integration
+          else
+            echo "No destructive changes generated."
+          fi
