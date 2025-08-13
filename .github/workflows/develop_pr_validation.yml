@@ -1,73 +1,33 @@
-name: Validate PR on develop branch
+name: Validate Salesforce Changes
 
 on:
   pull_request:
-    branches: [develop]
-    paths:
-      - 'BasicProject/force-app/**'
+    branches:
+      - main  # Change if your default branch is different
 
 jobs:
   validate:
     runs-on: ubuntu-latest
-    if: ${{ github.actor != 'dependabot[bot]' }}
-    steps:
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
 
+    steps:
+      # 1️⃣ Checkout source code
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      # Install Salesforce CLI (modern sf)
+      # 2️⃣ Install Salesforce CLI
       - name: Install Salesforce CLI
         run: |
-          npm install -g @salesforce/cli
-          sf --version
-          node -v
+          npm install --global @salesforce/cli
 
-      # Install sfdx-git-delta with no prompts
-      - name: Install sfdx-git-delta
-        run: |
-          sf plugins install sfdx-git-delta@latest --non-interactive
-          sf plugins
+      # 3️⃣ Authenticate to Salesforce (use auth URL stored as secret)
+      - name: Authenticate to Salesforce
+        run: echo "${{ secrets.SFDX_AUTH_URL }}" > authFile.txt && sf org login sfdx-url --sfdx-url-file authFile.txt --alias targetOrg
+        shell: bash
 
-      # Install SFDX Scanner with no prompts
-      - name: Install SFDX Scanner
+      # 4️⃣ Deploy metadata as validation only
+      - name: Run validation deployment
         run: |
-          sf plugins install @salesforce/sfdx-scanner --non-interactive
-          sf plugins
-
-      # Authenticate to a normal org from the auth URL secret
-      - name: Authenticate to Salesforce Org
-        run: |
-          echo '{ "sfdxAuthUrl": "'"${{ secrets.SFDX_DEVELOP_URL }}"'" }' > auth.json
-          sf org login sfdx-url --sfdx-url-file auth.json --alias MyOrgAlias --set-default
-          sf org display --target-org MyOrgAlias
-
-      # Generate delta inside BasicProject (SFDX project folder)
-      - name: Create delta package
-        working-directory: BasicProject
-        run: |
-          mkdir -p delta
-          sf sgd source delta \
-            --to "HEAD" \
-            --from "HEAD^" \
-            --output delta \
-            --generate-delta \
-            --source force-app/
-
-      # Validate deployment from inside BasicProject
-      - name: Validate deployment
-        working-directory: BasicProject
-        run: |
-          if [ -d "delta/force-app" ] && [ "$(ls -A delta/force-app 2>/dev/null)" ]; then
-            sf project deploy start \
-              --source-dir "delta/force-app" \
-              --dry-run \
-              --target-org MyOrgAlias
-          else
-            echo "No changes to deploy."
-          fi
+          sf project deploy start --manifest manifest/package.xml \
+            --target-org targetOrg \
+            --test-level RunLocalTests \
+            --dry-run
