@@ -3,31 +3,34 @@ name: Validate Salesforce Changes
 on:
   pull_request:
     branches:
-      - main  # Change if your default branch is different
+      - main
 
 jobs:
   validate:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout source code
+      # 1️⃣ Checkout repo
       - name: Checkout repository
         uses: actions/checkout@v4
 
       # 2️⃣ Install Salesforce CLI
       - name: Install Salesforce CLI
-        run: |
-          npm install --global @salesforce/cli
+        run: npm install --global @salesforce/cli
 
-      # 3️⃣ Authenticate to Salesforce (use auth URL stored as secret)
+      # 3️⃣ Authenticate to Salesforce
       - name: Authenticate to Salesforce
-        run: echo "${{ secrets.SFDX_AUTH_URL }}" > authFile.txt && sf org login sfdx-url --sfdx-url-file authFile.txt --alias targetOrg
+        run: |
+          echo "${{ secrets.SFDX_AUTH_URL }}" > authFile.txt
+          sf org login sfdx-url --sfdx-url-file authFile.txt --alias targetOrg
         shell: bash
 
-      # 4️⃣ Deploy metadata as validation only
-      - name: Run validation deployment
+      # 4️⃣ Validate deployment (inside BasicProject)
+      - name: Validate deployment
+        working-directory: BasicProject
         run: |
-          sf project deploy start --manifest manifest/package.xml \
+          sf project deploy start \
+            --manifest manifest/package.xml \
             --target-org targetOrg \
             --test-level RunLocalTests \
             --dry-run
