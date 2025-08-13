@@ -2,7 +2,7 @@ public with sharing class calculation {
     @AuraEnabled(cacheable=true)
     public static Decimal calculateTotal(Decimal price, Integer quantity) {
         if (price == null || quantity == null || quantity < 0) {
-            throw new AuraHandledException('Invalid input ');
+            throw new AuraHandledException('Invalid input wrong ');
         }
         return price * quantity;
     }
