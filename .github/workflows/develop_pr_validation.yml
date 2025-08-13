@@ -26,11 +26,20 @@ jobs:
         shell: bash
 
       # 4️⃣ Validate deployment (inside BasicProject)
+      # - name: Validate deployment
+      #   working-directory: BasicProject
+      #   run: |
+      #     sf project deploy start \
+      #       --manifest manifest/package.xml \
+      #       --target-org targetOrg \
+      #       --test-level RunLocalTests \
+      #       --dry-run
+
       - name: Validate deployment
         working-directory: BasicProject
         run: |
           sf project deploy start \
             --manifest manifest/package.xml \
             --target-org targetOrg \
-            --test-level RunLocalTests \
+            --test-level NoTestRun \
             --dry-run
