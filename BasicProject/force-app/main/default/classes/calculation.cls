@@ -10,7 +10,7 @@ public with sharing class calculation {
     @AuraEnabled(cacheable=true)
     public static Decimal calculateDiscount(Decimal total, Decimal discountRate) {
         if (total == null || discountRate < 0 || discountRate > 100) {
-            throw new AuraHandledException('Invalid input values');
+            throw new AuraHandledException('Invalid values');
         }
     }
 
