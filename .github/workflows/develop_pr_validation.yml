@@ -15,7 +15,7 @@ jobs:
     if: ${{ github.actor != 'dependabot[bot]' }}
     steps:
       # Install Node.js (version 20)
-      - uses: actions/setup-node@v3
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
 
@@ -41,6 +41,11 @@ jobs:
           tar xJf sfdx-linux-x64.tar.xz -C ~/sfdx --strip-components 1
           echo "$HOME/sfdx/bin" >> $GITHUB_PATH
           ~/sfdx/bin/sfdx version
+
+      # Install Node.js (version 20)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       # Install SFDX-Git-Delta plugin
       - name: 'Installing sfdx git delta'
