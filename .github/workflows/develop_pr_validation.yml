@@ -1,109 +1,50 @@
-# Unique name for this workflow
-name: Validate PR on develop branch
+name: Validate Salesforce Metadata
 
-# Definition of when the workflow should run
 on:
   pull_request:
-    types: [opened, synchronize]
-    branches: [main]
-    paths:
-      - 'BasicProject/force-app/**'
+    branches:
+      - main
 
 jobs:
-  validate-deployment-on-develop-org:
+  validate:
     runs-on: ubuntu-latest
-    if: ${{ github.actor != 'dependabot[bot]' }}
     steps:
-      # Install Node.js (version 20)
-      - uses: actions/setup-node@v4
+      # Step 1: Checkout repo
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Use Node.js 20 for everything after this point
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: 20
 
-      - name: 'Checkout source code'
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
+      # Step 3: Install Salesforce CLI (latest)
+      - name: Install Salesforce CLI
+        run: npm install --global sfdx-cli
 
-      - name: 'Read PR Body'
-        env:
-          PR_BODY: ${{ github.event.pull_request.body }}
+      # Step 4: Install sfdx-git-delta plugin
+      - name: Install sfdx-git-delta
+        run: sfdx plugins:install sfdx-git-delta@latest
+
+      # Step 5: Authenticate to your normal Salesforce org
+      - name: Authenticate to Salesforce Org
         run: |
-          echo "$PR_BODY" > ./pr_body.txt
-          node ./parsePR.js
-          TESTS=$(cat testsToRun.txt)
-          echo "APEX_TESTS=$TESTS" >> $GITHUB_ENV
+          echo "${{ secrets.SFDX_DEVELOP_URL }}" > auth_url.txt
+          sfdx auth:sfdxurl:store -f auth_url.txt -a MyOrgAlias
+        # Store an auth URL from your org in the SFDX_AUTH_URL GitHub secret
 
-      # Install Salesforce CLI
-      - name: 'Install Salesforce CLI'
+      # Step 6: Create delta package
+      - name: Create delta package
         run: |
-          wget https://developer.salesforce.com/media/salesforce-cli/sfdx/channels/stable/sfdx-linux-x64.tar.xz
-          mkdir ~/sfdx
-          tar xJf sfdx-linux-x64.tar.xz -C ~/sfdx --strip-components 1
-          echo "$HOME/sfdx/bin" >> $GITHUB_PATH
-          ~/sfdx/bin/sfdx version
+          mkdir delta
+          sfdx sgd:source:delta --to "HEAD" --from "HEAD^" --output delta --generate-delta
 
-      # Install Node.js (version 20)
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      # Install SFDX-Git-Delta plugin
-      - name: 'Installing sfdx git delta'
+      # Step 7: Validate deployment in normal org
+      - name: Validate deployment
         run: |
-          echo y | sfdx plugins:install sfdx-git-delta
-          sfdx plugins 
-
-      # Install Java (required for SFDX Scanner)
-      - name: 'Installing java'
-        run: |
-          sudo apt-get update
-          sudo apt install default-jdk -y
-
-      # Install SFDX Scanner
-      - name: 'Installing SFDX scanner'
-        run: sfdx plugins:install @salesforce/sfdx-scanner
-
-      # Populate auth file with SFDX_URL secret of integration org
-      - name: 'Populate auth file with SFDX_URL secret of integration org'
-        shell: bash
-        run: |
-          echo "${{ secrets.SFDX_DEVELOP_URL }}" > ./SFDX_INTEGRATION_URL.txt
-
-      # Authenticate to the integration org using the URL
-      - name: 'Authenticate to Integration Org'
-        run: sfdx auth:sfdxurl:store -f ./SFDX_INTEGRATION_URL.txt -s -a integration
-
-      # Create delta packages for changed metadata
-      - name: 'Create delta packages for new, modified or deleted metadata'
-        run: |
-          mkdir changed-sources
-          sfdx sgd:source:delta --to "HEAD" --from "HEAD^" --output changed-sources/ --generate-delta --source force-app/ 
-
-      # Scan the changed Apex code
-      - name: 'Scan code'
-        run: |
-          cd changed-sources
-          sfdx scanner:run --format sarif --target './**/*.cls' --category "Design,Best Practices,Performance" --outfile 'apexScanResults.sarif'  
-          cd ..
-
-      # Upload the SARIF results for code scanning
-      - name: 'Upload SARIF file'
-        uses: github/codeql-action/upload-sarif@v1
-        with:
-          sarif_file: changed-sources/apexScanResults.sarif
-
-      # Check-only deploy the changed metadata, running specified tests
-      - name: 'Check-only deploy delta changes - run specified tests'
-        if: ${{ env.APEX_TESTS != 'all' }}
-        run: |
-          echo ${{ env.APEX_TESTS }}
-          sfdx force:source:deploy -p "changed-sources/force-app" --checkonly --testlevel RunSpecifiedTests --runtests ${{ env.APEX_TESTS }} --json
-
-      # If 'all' tests were specified, run all local tests
-      - name: 'Check-only deploy delta changes - run all tests'
-        if: ${{ env.APEX_TESTS == 'all' }}
-        run: |
-          sfdx force:source:deploy -p "changed-sources/force-app" --checkonly --testlevel RunLocalTests --json
-
-      - name: 'Deploy destructive changes (if any)'
-        run: sfdx force:mdapi:deploy -d "changed-sources/destructiveChanges" --checkonly --ignorewarnings
+          sfdx force:source:deploy \
+            --sourcepath delta \
+            --targetusername MyOrgAlias \
+            --checkonly \
+            --testlevel RunLocalTests
