@@ -1,7 +1,10 @@
 name: Deploy to Salesforce (No Tests)
 
 on:
-  workflow_dispatch:  # Manual trigger from GitHub Actions tab
+  push:
+    branches:
+      - main  # Runs after PR merge into main
+  workflow_dispatch:  # Manual trigger from Actions tab
 
 jobs:
   deploy:
