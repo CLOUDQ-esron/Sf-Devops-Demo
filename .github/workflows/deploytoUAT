@@ -1,0 +1,36 @@
+name: Deploy to UAT
+
+on:
+  push:
+    branches:
+      - UAT  # Runs after PR merge into main
+  workflow_dispatch:  # Manual trigger from Actions tab
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1️⃣ Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2️⃣ Install Salesforce CLI
+      - name: Install Salesforce CLI
+        run: npm install --global @salesforce/cli
+
+      # 3️⃣ Authenticate to Salesforce
+      - name: Authenticate to Salesforce
+        run: |
+          echo "${{ secrets.SFDX_UAT_PROD_URL }}" > authFile.txt
+          sf org login sfdx-url --sfdx-url-file authFile.txt --alias targetOrg
+        shell: bash
+
+      # 4️⃣ Deploy without running tests
+      - name: Deploy metadata
+        working-directory: BasicProject
+        run: |
+          sf project deploy start \
+            --manifest manifest/package.xml \
+            --target-org targetOrg \
+            --test-level NoTestRun
